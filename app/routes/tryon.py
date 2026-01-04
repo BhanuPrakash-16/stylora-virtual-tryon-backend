@@ -123,8 +123,8 @@ async def virtual_tryon(
     # ========================================
     # SAFETY PASSED - Proceed to Try-On
     # ========================================
-    
-    tryon_result = await create_simple_overlay(person_bytes, garment_bytes)
+    # Create overlay (synchronous function)
+    tryon_result = create_simple_overlay(person_bytes, garment_bytes)
     
     if not tryon_result["success"]:
         # Try-on processing failed
