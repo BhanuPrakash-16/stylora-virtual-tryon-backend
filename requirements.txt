@@ -1,0 +1,27 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+python-dotenv==1.0.0
+
+# Image Processing
+opencv-python-headless==4.9.0.80
+numpy==1.24.3
+pillow==10.2.0
+
+# Background Removal (optional for overlay mode)
+rembg==2.0.56
+
+# AI & ML
+mediapipe==0.10.9
+
+# Replicate API (REQUIRED for virtual try-on)
+replicate==0.25.0
+
+# Firebase Admin SDK (optional)
+firebase-admin==6.4.0
+
+# Cloudinary (optional)
+cloudinary==1.38.0
+
+# Google AI (for safety checks)
+google-generativeai==0.4.0
