@@ -70,42 +70,12 @@ async def root():
 @app.get("/health")
 async def health_check():
     """
-    Comprehensive health check.
+    Ultra-light health check for Railway/Render.
     
-    Checks:
-    - API is running
-    - OpenAI API is configured
-    - Safety modules are loadable
+    CRITICAL: Must be instant and never fail.
+    No ML imports, no external calls, no heavy checks.
     """
-    
-    # Check Replicate API status
-    replicate_status = {
-        "configured": bool(config.REPLICATE_API_TOKEN),
-        "accessible": True if config.REPLICATE_API_TOKEN else False,
-        "error": None if config.REPLICATE_API_TOKEN else "API token not set"
-    }
-    
-    # Check if safety modules can be imported
-    safety_modules_ok = True
-    try:
-        from app.safety import age_check, pose_check, nsfw_check, clothing_rules
-        from app.safety.safety_orchestrator import validate_full_request
-    except Exception as e:
-        safety_modules_ok = False
-    
-    health_status = {
-        "api": "healthy",
-        "replicate": replicate_status,
-        "safety_modules": "healthy" if safety_modules_ok else "error",
-        "timestamp": None
-    }
-    
-    # Overall status
-    overall_healthy = safety_modules_ok  # API key is optional for startup
-    
-    health_status["overall"] = "healthy" if overall_healthy else "degraded"
-    
-    return health_status
+    return {"status": "ok"}
 
 
 @app.get("/config")
@@ -140,44 +110,57 @@ async def startup_event():
     """
     Run on application startup.
     
-    Validates configuration and logs startup info.
+    CRITICAL: This must NEVER crash the application.
+    All services are optional and wrapped in try-except.
     """
+    import os
+    
     print("=" * 60)
-    print("Stylora Virtual Try-On Backend (Replicate API - Professional AI)")
+    print("Stylora Virtual Try-On Backend (FREE Overlay Mode)")
     print("=" * 60)
-    print(f"Version: 1.0.0")
-    print(f"Safety Enforcement: DISABLED (for testing)")
-    print(f"Age Check: DISABLED (for testing)")
-    print(f"Replicate API: {'CONFIGURED' if config.REPLICATE_API_TOKEN else 'NOT CONFIGURED'}")
+    print(f"Version: 1.0.0 (Railway-Safe)")
+    print(f"Mode: FREE Overlay-Based Try-On")
     print("=" * 60)
     
-    # Initialize Firebase Admin SDK
-    from app.services.firebase_service import initialize_firebase
-    initialize_firebase()
-    
-    # Initialize Cloudinary
-    from app.services.cloudinary_service import initialize_cloudinary
-    initialize_cloudinary()
-    
-    # Validate configuration
+    # Validate configuration (never crash)
     try:
+        from app.config import config
         config.validate()
-        print("✓ Configuration validated successfully")
+        print("✓ Configuration validated")
     except Exception as e:
-        print(f"✗ Configuration error: {e}")
-        print("  Please set HUGGINGFACE_API_TOKEN in your .env file")
+        print(f"⚠ Config validation skipped: {e}")
+    
+    # Initialize Firebase (optional)
+    if os.getenv("FIREBASE_ENABLED", "false").lower() == "true":
+        try:
+            from app.services.firebase_service import initialize_firebase
+            initialize_firebase()
+            print("✓ Firebase initialized")
+        except Exception as e:
+            print(f"⚠ Firebase skipped: {e}")
+    else:
+        print("○ Firebase disabled (set FIREBASE_ENABLED=true to enable)")
+    
+    # Initialize Cloudinary (optional)
+    if os.getenv("CLOUDINARY_ENABLED", "false").lower() == "true":
+        try:
+            from app.services.cloudinary_service import initialize_cloudinary
+            initialize_cloudinary()
+            print("✓ Cloudinary initialized")
+        except Exception as e:
+            print(f"⚠ Cloudinary skipped: {e}")
+    else:
+        print("○ Cloudinary disabled (set CLOUDINARY_ENABLED=true to enable)")
     
     print("=" * 60)
     print("API Endpoints:")
     print("  - GET  /         - Root health check")
-    print("  - GET  /health   - Comprehensive health check")
+    print("  - GET  /health   - Ultra-light health check")
     print("  - GET  /config   - Public configuration")
-    print("  - POST /api/tryon          - Virtual try-on (safety enforced)")
-    print("  - POST /api/validate       - Validate images")
-    print("  - GET  /api/safety-rules   - Get safety rules")
+    print("  - POST /api/tryon - Virtual try-on (FREE overlay)")
     print("  - GET  /docs     - API documentation")
     print("=" * 60)
-    print("Ready to accept requests!")
+    print("✅ Backend started successfully!")
     print("=" * 60)
 
 

@@ -8,3 +8,9 @@ healthcheckPath = "/health"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
+
+# Note: Set these environment variables in Railway Dashboard:
+# - PORT (auto-set by Railway)
+# - FIREBASE_ENABLED=false (or true if using Firebase)
+# - CLOUDINARY_ENABLED=false (or true if using Cloudinary)
+# - CORS_ORIGINS=https://your-frontend.vercel.app

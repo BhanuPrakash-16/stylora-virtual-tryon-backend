@@ -1,17 +1,15 @@
 """
 Virtual Try-On API Routes
 ==========================
-Main endpoint for virtual try-on with safety enforcement.
+FREE Overlay-Based Try-On (Railway-Safe)
 """
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from typing import Dict, Optional
-from app.safety.safety_orchestrator import validate_full_request
-from app.services.overlay_service import create_simple_overlay
+from app.services.free_overlay_service import create_simple_overlay
 from app.services.image_service import validate_and_prepare_image
 from app.services.cloudinary_service import upload_result_image, is_cloudinary_initialized
 from app.services.firebase_service import save_tryon_to_firestore, is_firebase_initialized
-from app.middleware.auth import get_current_user
 
 
 router = APIRouter(prefix="/api", tags=["try-on"])
@@ -24,23 +22,15 @@ async def virtual_tryon(
     # TEMPORARILY REMOVED FOR TESTING: current_user: Optional[Dict] = Depends(get_current_user)
 ) -> Dict:
     """
-    Virtual Try-On Endpoint
-    =======================
+    Virtual Try-On Endpoint (FREE Overlay Mode - BETA)
+    ==================================================
     
-    Accepts person and garment images, validates safety, and returns try-on result.
+    FREE overlay-based try-on (Railway-Safe, 100% free).
     
-    **SAFETY PIPELINE (MANDATORY):**
-    1. Person Image Validation:
-       - Age verification (18+ only)
-       - Pose detection & distance check
-       - NSFW content check
-    
-    2. Garment Image Validation:
-       - Allowed clothing only (no bikinis, lingerie, etc.)
-       - No person wearing garment
-       - Transparency check
-    
-    3. Only after ALL safety checks pass → Create overlay composite
+    **MODE**: Beta Overlay (Simple Geometric)
+    - 100% free, no GPU required
+    - Instant results (~1-2 seconds)
+    - Beta quality (good for MVP)
     
     **Request:**
     - person_image (file): Full body photo of person
