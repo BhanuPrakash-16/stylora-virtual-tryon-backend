@@ -1,12 +1,12 @@
 """
 Virtual Try-On API Routes
 ==========================
-FREE Overlay-Based Try-On (Railway-Safe)
+ENHANCED Overlay-Based Try-On with MediaPipe & Rembg
 """
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from typing import Dict, Optional
-from app.services.free_overlay_service import create_simple_overlay
+from app.services.enhanced_overlay_service import create_simple_overlay
 from app.services.image_service import validate_and_prepare_image
 from app.services.cloudinary_service import upload_result_image, is_cloudinary_initialized
 from app.services.firebase_service import save_tryon_to_firestore, is_firebase_initialized
@@ -22,15 +22,17 @@ async def virtual_tryon(
     # TEMPORARILY REMOVED FOR TESTING: current_user: Optional[Dict] = Depends(get_current_user)
 ) -> Dict:
     """
-    Virtual Try-On Endpoint (FREE Overlay Mode - BETA)
-    ==================================================
+    Virtual Try-On Endpoint (ENHANCED Mode)
+    ========================================
     
-    FREE overlay-based try-on (Railway-Safe, 100% free).
+    Advanced overlay with MediaPipe pose detection & background removal.
     
-    **MODE**: Beta Overlay (Simple Geometric)
-    - 100% free, no GPU required
-    - Instant results (~1-2 seconds)
-    - Beta quality (good for MVP)
+    **MODE**: Enhanced Overlay (ML-Powered)
+    - MediaPipe for accurate pose detection
+    - Rembg for automatic background removal
+    - Smart positioning based on body landmarks
+    - Fallback to simple overlay if ML fails
+    - Processing time: 2-5 seconds
     
     **Request:**
     - person_image (file): Full body photo of person
@@ -123,8 +125,8 @@ async def virtual_tryon(
     # ========================================
     # SAFETY PASSED - Proceed to Try-On
     # ========================================
-    # Create overlay (synchronous function)
-    tryon_result = create_simple_overlay(person_bytes, garment_bytes)
+    # Create enhanced overlay with MediaPipe & rembg
+    tryon_result = await create_simple_overlay(person_bytes, garment_bytes)
     
     if not tryon_result["success"]:
         # Try-on processing failed

@@ -116,10 +116,10 @@ async def startup_event():
     import os
     
     print("=" * 60)
-    print("Stylora Virtual Try-On Backend (FREE Overlay Mode)")
+    print("Stylora Virtual Try-On Backend (ENHANCED Mode)")
     print("=" * 60)
-    print(f"Version: 1.0.0 (Railway-Safe)")
-    print(f"Mode: FREE Overlay-Based Try-On")
+    print(f"Version: 1.0.0 (ML-Powered)")
+    print(f"Mode: Enhanced Overlay with MediaPipe & Rembg")
     print("=" * 60)
     
     # Validate configuration (never crash)
@@ -157,7 +157,7 @@ async def startup_event():
     print("  - GET  /         - Root health check")
     print("  - GET  /health   - Ultra-light health check")
     print("  - GET  /config   - Public configuration")
-    print("  - POST /api/tryon - Virtual try-on (FREE overlay)")
+    print("  - POST /api/tryon - Virtual try-on (ML-Enhanced)")
     print("  - GET  /docs     - API documentation")
     print("=" * 60)
     print("✅ Backend started successfully!")
