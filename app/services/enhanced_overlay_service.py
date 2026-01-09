@@ -302,11 +302,11 @@
 #         traceback.print_exc()
 #         return {"success": False, "error": str(e)}
 """
-Stylora: Geometry-Based Virtual Try-On Service (Flat-Lay Support)
-=================================================================
-1. Intelligent Fallback: Generates synthetic landmarks for flat-lay shirts.
-2. Forced Warping: Ensures the shirt IS stretched to fit the user, no matter what.
-3. Aggressive Coverage: Scales width to 1.3x user shoulders to hide original clothes.
+Stylora: Unified Virtual Try-On Service (Auto-Switching)
+========================================================
+1. Detects if Garment Image has a model or is a flat lay.
+2. MODE A (Model): Uses 'Sandwich' composition (Head Paste-Back) for realistic collars.
+3. MODE B (Flat Lay): Uses 'Synthetic Landmarks' & aggressive scaling for coverage.
 """
 
 import cv2
@@ -318,212 +318,232 @@ import io
 from rembg import remove, new_session
 from typing import Dict, Tuple, Optional
 
-# Initialize MediaPipe Pose
+# Initialize MediaPipe
 mp_pose = mp.solutions.pose
+mp_selfie_segmentation = mp.solutions.selfie_segmentation
 
-# Initialize Rembg Session
+# Initialize Rembg
 rembg_session = new_session("u2net")
 
 # ==========================================
-# 1. CORE MATH & DETECTION
+# 1. SHARED UTILITIES (Landmarks & Masks)
 # ==========================================
 
 def get_landmarks(image_cv: np.ndarray) -> Optional[Dict]:
-    """Detects landmarks on a human user."""
+    """Get pose landmarks from a human image."""
     h, w = image_cv.shape[:2]
     img_rgb = cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB)
     
     with mp_pose.Pose(static_image_mode=True, model_complexity=2, min_detection_confidence=0.5) as pose:
         results = pose.process(img_rgb)
-        
-        if not results.pose_landmarks:
-            return None
+        if not results.pose_landmarks: return None
 
         lm = results.pose_landmarks.landmark
-        
-        def loc(landmark): return (int(landmark.x * w), int(landmark.y * h))
+        def loc(l): return (int(l.x * w), int(l.y * h))
         
         l_sh = loc(lm[mp_pose.PoseLandmark.LEFT_SHOULDER])
         r_sh = loc(lm[mp_pose.PoseLandmark.RIGHT_SHOULDER])
-        l_hip = loc(lm[mp_pose.PoseLandmark.LEFT_HIP])
-        r_hip = loc(lm[mp_pose.PoseLandmark.RIGHT_HIP])
+        nose = loc(lm[mp_pose.PoseLandmark.NOSE])
         
+        # Logic A: Trap level for Model mode
+        trap_y = int(l_sh[1] - (l_sh[1] - nose[1]) * 0.25)
+        neck_point_model = ((l_sh[0] + r_sh[0]) // 2, trap_y)
+
+        # Logic B: Standard Center for Flat Lay mode
+        neck_point_flat = ((l_sh[0] + r_sh[0]) // 2, (l_sh[1] + r_sh[1]) // 2)
+
         return {
-            "nose": loc(lm[mp_pose.PoseLandmark.NOSE]),
             "l_sh": l_sh,
             "r_sh": r_sh,
-            "hip_center": (int((l_hip[0] + r_hip[0]) * 0.5), int((l_hip[1] + r_hip[1]) * 0.5)),
-            # Euclidean distance for accurate width
-            "shoulder_width": np.linalg.norm(np.array(l_sh) - np.array(r_sh)),
-            "shoulder_center": (int((l_sh[0] + r_sh[0]) * 0.5), int((l_sh[1] + r_sh[1]) * 0.5))
+            "nose": nose,
+            "neck_model": neck_point_model, # Use for Model Mode (High anchor)
+            "neck_flat": neck_point_flat,   # Use for Flat Mode (Standard anchor)
+            "hip_center": loc(lm[mp_pose.PoseLandmark.LEFT_HIP]), 
+            "shoulder_width": np.linalg.norm(np.array(l_sh) - np.array(r_sh))
         }
 
-# ==========================================
-# 2. GHOST MANNEQUIN & FLAT LAY ENGINE
-# ==========================================
-
 def get_garment_landmarks_from_shape(img_np: np.ndarray) -> Dict:
-    """
-    CRITICAL FIX: If no person is detected (flat lay), find shoulders/hem
-    based on the non-transparent pixels of the garment.
-    """
+    """Fallback: Generate synthetic landmarks for flat-lay images."""
     alpha = img_np[:, :, 3]
     coords = cv2.findNonZero(alpha)
     
     if coords is None:
-        # Fallback if image is empty
         h, w = img_np.shape[:2]
         return {
             "l_sh": (int(w*0.2), int(h*0.1)),
             "r_sh": (int(w*0.8), int(h*0.1)),
-            "hip_center": (int(w*0.5), int(h*0.9))
+            "neck": (int(w*0.5), int(h*0.1))
         }
 
     x, y, w, h = cv2.boundingRect(coords)
-    
-    # We estimate shoulders are at the top corners of the bounding box
-    # We estimate hip is at the bottom center
     return {
-        "l_sh": (x + int(w * 0.15), y + int(h * 0.15)), # Slightly in from top-left
-        "r_sh": (x + w - int(w * 0.15), y + int(h * 0.15)), # Slightly in from top-right
-        "hip_center": (x + w // 2, y + h - int(h * 0.05)) # Bottom center
+        "l_sh": (x + int(w * 0.15), y + int(h * 0.15)), 
+        "r_sh": (x + w - int(w * 0.15), y + int(h * 0.15)), 
+        "neck": (x + w // 2, y + int(h * 0.1)) 
     }
 
-def create_ghost_garment(garment_bytes: bytes) -> Tuple[Image.Image, Dict]:
-    """Prepares garment and GUARANTEES landmarks."""
-    
-    # 1. Remove Background
-    print("🎨 Removing background...")
+# ==========================================
+# 2. SMART GARMENT PROCESSOR
+# ==========================================
+
+def process_garment(garment_bytes: bytes) -> Tuple[Image.Image, Dict, bool]:
+    """
+    Returns: (Processed Image, Landmarks, is_model_detected)
+    """
+    print("🎨 Removing garment background...")
     no_bg_bytes = remove(garment_bytes, session=rembg_session)
-    img_pil = Image.open(io.BytesIO(no_bg_bytes)).convert("RGBA")
-    img_np = np.array(img_pil)
+    garment_pil = Image.open(io.BytesIO(no_bg_bytes)).convert("RGBA")
+    garment_np = np.array(garment_pil)
 
-    # 2. Try to detect a model (Ghost Mannequin Mode)
-    # We convert to BGR for OpenCV
-    img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
-    landmarks = get_landmarks(img_cv)
+    # Try to detect a person/model
+    garment_cv = cv2.cvtColor(garment_np, cv2.COLOR_RGBA2BGR)
+    glm = get_landmarks(garment_cv)
 
-    if landmarks:
-        print("✂️  Model detected! Using real pose landmarks.")
-        # Perform neck erasure if it's a model
-        nose = landmarks['nose']
-        l_sh = landmarks['l_sh']
-        r_sh = landmarks['r_sh']
-        
-        # Deep neck cut
-        sh_center = ((l_sh[0] + r_sh[0])//2, (l_sh[1] + r_sh[1])//2)
-        neck_top = (
-            int(sh_center[0] + (nose[0] - sh_center[0]) * 0.5),
-            int(sh_center[1] + (nose[1] - sh_center[1]) * 0.5)
-        )
-        triangle_cnt = np.array([l_sh, r_sh, neck_top], np.int32)
-        cv2.drawContours(img_np, [triangle_cnt], 0, (0, 0, 0, 0), -1)
-        radius = int(np.linalg.norm(np.array(nose) - np.array(sh_center)) * 1.2)
-        cv2.circle(img_np, nose, radius, (0, 0, 0, 0), -1)
-
+    if glm:
+        print("✅ Model Detected in Garment -> Switching to 'Sandwich' Mode.")
+        # Standardize keys for the warper
+        glm['neck'] = glm['neck_model'] 
+        return garment_pil, glm, True # True = It is a model
     else:
-        print("⚠️ No model detected (Flat Lay). Calculating synthetic landmarks...")
-        # CRITICAL: Generate landmarks from image shape so we can still WARP
-        landmarks = get_garment_landmarks_from_shape(img_np)
-
-    # Crop to content to remove empty space
-    alpha = img_np[:, :, 3]
-    coords = cv2.findNonZero(alpha)
-    if coords is not None:
-        x, y, w, h = cv2.boundingRect(coords)
-        pad = 20
-        x, y = max(0, x-pad), max(0, y-pad)
-        w, h = w + 2*pad, h + 2*pad
-        final_img = Image.fromarray(img_np).crop((x, y, x+w, y+h))
-        
-        # Adjust landmarks
-        adj_lm = {}
-        for k, v in landmarks.items():
-            if isinstance(v, tuple): adj_lm[k] = (v[0]-x, v[1]-y)
-            else: adj_lm[k] = v
-        return final_img, adj_lm
-
-    return Image.fromarray(img_np), landmarks
+        print("⚠️ No Model Detected -> Switching to 'Flat Lay' Mode.")
+        # Generate synthetic landmarks
+        fake_lm = get_garment_landmarks_from_shape(garment_np)
+        # Estimate hip for flat lay warping
+        src_neck = fake_lm['neck']
+        shoulder_dist = np.linalg.norm(np.array(fake_lm['l_sh']) - np.array(fake_lm['r_sh']))
+        fake_lm['hip_center'] = (src_neck[0], src_neck[1] + int(shoulder_dist * 1.5))
+        return garment_pil, fake_lm, False # False = It is flat lay
 
 # ==========================================
-# 3. GEOMETRY MAGIC (WARPING)
+# 3. DUAL WARPING LOGIC
 # ==========================================
 
-def warp_garment_to_user(garment_pil: Image.Image, src_lm: Dict, user_lm: Dict, target_size: Tuple[int, int]) -> Image.Image:
+def warp_garment(garment_pil: Image.Image, src_lm: Dict, user_lm: Dict, target_size: Tuple[int, int], is_model: bool) -> Image.Image:
     w, h = target_size
     garment_np = np.array(garment_pil)
 
-    # Source Points (From Garment)
-    src_tri = np.float32([src_lm['l_sh'], src_lm['r_sh'], src_lm['hip_center']])
+    # --- SOURCE POINTS ---
+    if is_model:
+        # Logic A (Model): Use specific neck point
+        src_neck = src_lm['neck']
+        # Estimate hip relative to shoulders if real hip not reliable on cutout
+        src_hip = (src_neck[0], src_neck[1] + int(src_lm['shoulder_width'] * 1.5))
+        src_tri = np.float32([src_lm['l_sh'], src_lm['r_sh'], src_hip])
+    else:
+        # Logic B (Flat): Use synthetic points
+        src_tri = np.float32([src_lm['l_sh'], src_lm['r_sh'], src_lm['hip_center']])
 
-    # Destination Points (From User)
-    dst_l_raw = np.array(user_lm['l_sh'])
-    dst_r_raw = np.array(user_lm['r_sh'])
-    dst_hip_raw = np.array(user_lm['hip_center'])
+    # --- DESTINATION POINTS ---
+    sh_width = user_lm['shoulder_width']
     
-    # --- AGGRESSIVE COVERAGE SCALING ---
-    sh_vec = dst_r_raw - dst_l_raw
-    sh_center = (dst_l_raw + dst_r_raw) / 2.0
+    if is_model:
+        # Logic A (Sandwich Mode): 1.15x Width, Trap-Level Neck
+        scale = 0.075 # Corresponds to 1.15x total width
+        dst_neck_y = user_lm['neck_model'][1] + int(sh_width * 0.1)
+        dst_hip_y = user_lm['neck_model'][1] + int(sh_width * 1.8)
+    else:
+        # Logic B (Flat Lay Mode): 1.35x Width, Aggressive Coverage
+        scale = 0.175 # Corresponds to 1.35x total width
+        dst_neck_y = user_lm['neck_flat'][1] - int(sh_width * 0.08) # Lift slightly
+        dst_hip_y = user_lm['neck_flat'][1] + int(sh_width * 2.0)
+
+    # Apply Scaling
+    sh_vec_x = user_lm['r_sh'][0] - user_lm['l_sh'][0]
+    dst_l_sh = (user_lm['l_sh'][0] - int(sh_vec_x * scale), user_lm['l_sh'][1])
+    dst_r_sh = (user_lm['r_sh'][0] + int(sh_vec_x * scale), user_lm['r_sh'][1])
     
-    # Scale width by 1.35x (Stronger than before to hide existing shirt)
-    scale_factor = 1.35
-    dst_l = sh_center - (sh_vec * scale_factor / 2.0)
-    dst_r = sh_center + (sh_vec * scale_factor / 2.0)
+    # Adjust Vertical Alignment
+    if is_model:
+        # Align to Trap level
+        dst_l_sh = (dst_l_sh[0], dst_neck_y)
+        dst_r_sh = (dst_r_sh[0], dst_neck_y)
+    else:
+        # Align to Standard Shoulder level (lifted)
+        dst_l_sh = (dst_l_sh[0], dst_l_sh[1] - int(sh_width * 0.08))
+        dst_r_sh = (dst_r_sh[0], dst_r_sh[1] - int(sh_width * 0.08))
 
-    # --- NECK PLACEMENT ---
-    # Lift collar slightly above the calculated shoulder line
-    torso_len = np.linalg.norm(dst_hip_raw - sh_center)
-    lift = torso_len * 0.08  # Lift 8%
-    dst_l[1] -= lift
-    dst_r[1] -= lift
-
-    # --- HEM EXTENSION ---
-    # Push the hem down to ensure length
-    dst_hip = dst_hip_raw + (dst_hip_raw - sh_center) * 0.20
-
-    dst_tri = np.float32([dst_l, dst_r, dst_hip])
+    dst_hip = (user_lm['neck_flat'][0], dst_hip_y)
+    dst_tri = np.float32([dst_l_sh, dst_r_sh, dst_hip])
     
+    # Warp
     matrix = cv2.getAffineTransform(src_tri, dst_tri)
     warped = cv2.warpAffine(garment_np, matrix, (w, h), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0,0))
-    
     return Image.fromarray(warped)
 
 # ==========================================
-# 4. MAIN PIPELINE
+# 4. COMPOSITING STRATEGIES
+# ==========================================
+
+def composite_sandwich(person_pil: Image.Image, garment_pil: Image.Image, user_lm: Dict) -> Image.Image:
+    """LOGIC A: For models (Paste Head Back On Top)"""
+    w, h = person_pil.size
+    canvas = person_pil.copy()
+    
+    # Layer 2: Shirt
+    canvas.alpha_composite(garment_pil)
+    
+    # Layer 3: Head Paste-Back
+    head_mask = np.zeros((h, w), dtype=np.uint8)
+    nose = user_lm['nose']
+    neck_center = user_lm['neck_model'] # Trap level
+    
+    neck_radius = int(user_lm['shoulder_width'] * 0.3)
+    cv2.circle(head_mask, neck_center, neck_radius, 255, -1)
+    head_mask[0:nose[1], :] = 255
+    cv2.line(head_mask, tuple(nose), neck_center, 255, int(neck_radius * 1.8))
+    
+    head_mask_pil = Image.fromarray(head_mask).filter(ImageFilter.GaussianBlur(8))
+    head_layer = person_pil.copy()
+    head_layer.putalpha(head_mask_pil)
+    
+    canvas.alpha_composite(head_layer)
+    return canvas
+
+def composite_simple(person_pil: Image.Image, garment_pil: Image.Image) -> Image.Image:
+    """LOGIC B: For flat lays (Simple Overlay)"""
+    return Image.alpha_composite(person_pil, garment_pil)
+
+# ==========================================
+# 5. MAIN PIPELINE
 # ==========================================
 
 async def create_simple_overlay(person_bytes: bytes, garment_bytes: bytes) -> Dict:
     try:
-        print("\n=== STARTING GEOMETRY VTON (Flat Lay Support) ===")
+        print("\n=== STARTING AUTO-SWITCH VTON ===")
+        
+        # 1. Load Person
         nparr = np.frombuffer(person_bytes, np.uint8)
         person_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        person_h, person_w = person_cv.shape[:2]
-        person_pil = Image.fromarray(cv2.cvtColor(person_cv, cv2.COLOR_BGR2RGBA))
-
-        user_lm = get_landmarks(person_cv)
-        if not user_lm:
-            return {"success": False, "error": "No person detected in user image"}
-
-        # This will now ALWAYS return landmarks, either real or synthetic
-        clean_garment, garment_lm = create_ghost_garment(garment_bytes)
-
-        # Warp is now GUARANTEED to run
-        final_garment = warp_garment_to_user(clean_garment, garment_lm, user_lm, (person_w, person_h))
-
-        # Composite
-        result = Image.alpha_composite(person_pil, final_garment)
+        if person_cv is None: return {"success": False, "error": "Invalid person image"}
         
+        h, w = person_cv.shape[:2]
+        person_pil = Image.fromarray(cv2.cvtColor(person_cv, cv2.COLOR_BGR2RGBA))
+        
+        # 2. Analyze User
+        user_lm = get_landmarks(person_cv)
+        if not user_lm: return {"success": False, "error": "No person detected"}
+
+        # 3. Process Garment & DETECT TYPE
+        clean_garment, garment_lm, is_model = process_garment(garment_bytes)
+
+        # 4. Warp (Logic switches inside)
+        final_garment = warp_garment(clean_garment, garment_lm, user_lm, (w, h), is_model)
+
+        # 5. Composite (Logic switches here)
+        if is_model:
+            print("✨ Using 'Sandwich' Composite (Model Mode)")
+            result = composite_sandwich(person_pil, final_garment, user_lm)
+        else:
+            print("✨ Using 'Simple' Composite (Flat Lay Mode)")
+            result = composite_simple(person_pil, final_garment)
+        
+        # 6. Output
         buf = io.BytesIO()
         result.convert("RGB").save(buf, format='PNG')
         res_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
 
-        return {
-            "success": True, 
-            "result_url": f"data:image/png;base64,{res_b64}",
-            "result_base64": res_b64
-        }
+        return {"success": True, "result_url": f"data:image/png;base64,{res_b64}", "result_base64": res_b64}
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        print(f"Error: {e}")
         return {"success": False, "error": str(e)}
