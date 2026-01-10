@@ -38,7 +38,7 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.CORS_ORIGINS,
+    allow_origins=["https://stylora-virtual-tryon.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
